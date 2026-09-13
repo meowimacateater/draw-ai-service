@@ -2,6 +2,7 @@ import io
 import os
 import sys
 import torch
+import asyncio
 from PIL import Image
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status
 from fastapi.responses import Response
@@ -24,6 +25,12 @@ def verify_key(api_key: str = Depends(APIKeyHeader(name='X-API-Key'))):
 predictor = torch.hub.load('Stable-X/StableNormal', 'StableNormal', trust_repo=True)
 predictor = predictor.to('cuda', dtype=torch.float16)
 
+model_lock = asyncio.Lock()
+
+def run_inference(img: Image.Image):
+    with torch.inference_mode():
+        return predictor(img)
+
 @app.post("/normal/generate")
 async def normal_generate(
     file: UploadFile = File(...),
@@ -41,10 +48,12 @@ async def normal_generate(
             detail='image too large max (1024x1024)'
         )
 
-    try:
-        normal_image = predictor(image)
-    except Exception as e:
-        raise HTTPException(status_code=500)
+    async with model_lock:
+        try:
+            normal_image = await asyncio.to_thread(run_inference, image)
+        except Exception as e:
+            print(e)
+            raise HTTPException(status_code=500)
 
     output_buffer = io.BytesIO()
     normal_image.save(output_buffer, format='PNG')
